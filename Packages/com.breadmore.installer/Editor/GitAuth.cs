@@ -39,7 +39,7 @@ namespace Breadmore.Installer.Editor
                 WriteCredential(proc, includePassword: true, token);
                 proc.WaitForExit(5000);
 
-                bool ok = proc.HasExited && proc.ExitCode == 0 && CanFillCredential();
+                bool ok = proc.HasExited && proc.ExitCode == 0 && CanFillCredential(token);
                 CredentialSeeded = ok;
                 if (!ok)
                     Debug.LogWarning("[Breadmore Installer] Token was saved, but git credential lookup failed. Configure a git credential helper, then save again.");
@@ -68,23 +68,58 @@ namespace Breadmore.Installer.Editor
 
         private static void ForgetCredential()
         {
+            // osxkeychain may keep an older GitHub Desktop or PAT credential under a different
+            // username. Ask git what it would currently use, then reject that exact account.
+            string existing = FillCredentialOutput();
+            string existingUsername = ReadCredentialValue(existing, "username");
+            if (!string.IsNullOrEmpty(existingUsername))
+                RejectCredential(existingUsername);
+
+            RejectCredential("x-access-token");
+            RejectCredential(null);
+        }
+
+        private static void RejectCredential(string username)
+        {
             using var proc = StartGit("credential reject");
             if (proc == null) return;
 
-            WriteCredential(proc, includePassword: false, token: null);
+            WriteCredential(proc, includePassword: false, token: null, username: username);
             proc.WaitForExit(5000);
         }
 
-        private static bool CanFillCredential()
+        private static bool CanFillCredential(string expectedToken)
+        {
+            string output = FillCredentialOutput();
+            string username = ReadCredentialValue(output, "username");
+            string password = ReadCredentialValue(output, "password");
+
+            return username == "x-access-token" && password == expectedToken;
+        }
+
+        private static string FillCredentialOutput()
         {
             using var proc = StartGit("credential fill");
-            if (proc == null) return false;
+            if (proc == null) return string.Empty;
 
             WriteCredential(proc, includePassword: false, token: null);
             string output = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit(5000);
+            return proc.HasExited && proc.ExitCode == 0 ? output : string.Empty;
+        }
 
-            return proc.HasExited && proc.ExitCode == 0 && output.Contains("username=") && output.Contains("password=");
+        private static string ReadCredentialValue(string credentialOutput, string key)
+        {
+            if (string.IsNullOrEmpty(credentialOutput) || string.IsNullOrEmpty(key)) return null;
+
+            string prefix = key + "=";
+            string[] lines = credentialOutput.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (string line in lines)
+            {
+                if (line.StartsWith(prefix, StringComparison.Ordinal))
+                    return line.Substring(prefix.Length);
+            }
+            return null;
         }
 
         private static Process StartGit(string arguments)
@@ -115,11 +150,13 @@ namespace Breadmore.Installer.Editor
             return proc.HasExited ? proc.ExitCode : -1;
         }
 
-        private static void WriteCredential(Process proc, bool includePassword, string token)
+        private static void WriteCredential(Process proc, bool includePassword, string token, string username = null)
         {
             proc.StandardInput.NewLine = "\n";
             proc.StandardInput.WriteLine("protocol=https");
             proc.StandardInput.WriteLine("host=github.com");
+            if (!string.IsNullOrEmpty(username))
+                proc.StandardInput.WriteLine("username=" + username);
             if (includePassword)
             {
                 proc.StandardInput.WriteLine("username=x-access-token");
