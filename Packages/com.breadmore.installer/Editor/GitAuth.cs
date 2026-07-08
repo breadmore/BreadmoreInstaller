@@ -9,6 +9,7 @@ namespace Breadmore.Installer.Editor
     internal static class GitAuth
     {
         private const string SeededKey = "Breadmore.Installer.GitCredentialSeeded";
+        private const string CoreCredentialPath = "breadmore/BreadmoreCore.git";
 
         public static bool CredentialSeeded
         {
@@ -29,17 +30,11 @@ namespace Breadmore.Installer.Editor
                 EnsureCredentialHelperConfigured();
                 ForgetCredential();
 
-                using var proc = StartGit("credential approve");
-                if (proc == null)
-                {
-                    CredentialSeeded = false;
-                    return false;
-                }
-
-                WriteCredential(proc, includePassword: true, token);
-                proc.WaitForExit(5000);
-
-                bool ok = proc.HasExited && proc.ExitCode == 0 && CanFillCredential(token);
+                bool hostOk = ApproveCredential(token, credentialPath: null)
+                              && CanFillCredential(token, credentialPath: null);
+                bool corePathOk = ApproveCredential(token, CoreCredentialPath)
+                                  && CanFillCredential(token, CoreCredentialPath);
+                bool ok = hostOk && corePathOk;
                 CredentialSeeded = ok;
                 if (!ok)
                     Debug.LogWarning("[Breadmore Installer] Token was saved, but git credential lookup failed. Configure a git credential helper, then save again.");
@@ -70,39 +65,55 @@ namespace Breadmore.Installer.Editor
         {
             // osxkeychain may keep an older GitHub Desktop or PAT credential under a different
             // username. Ask git what it would currently use, then reject that exact account.
-            string existing = FillCredentialOutput();
-            string existingUsername = ReadCredentialValue(existing, "username");
-            if (!string.IsNullOrEmpty(existingUsername))
-                RejectCredential(existingUsername);
-
-            RejectCredential("x-access-token");
-            RejectCredential(null);
+            ForgetCredential(credentialPath: null);
+            ForgetCredential(CoreCredentialPath);
         }
 
-        private static void RejectCredential(string username)
+        private static void ForgetCredential(string credentialPath)
+        {
+            string existing = FillCredentialOutput(credentialPath);
+            string existingUsername = ReadCredentialValue(existing, "username");
+            if (!string.IsNullOrEmpty(existingUsername))
+                RejectCredential(existingUsername, credentialPath);
+
+            RejectCredential("x-access-token", credentialPath);
+            RejectCredential(null, credentialPath);
+        }
+
+        private static bool ApproveCredential(string token, string credentialPath)
+        {
+            using var proc = StartGit("credential approve");
+            if (proc == null) return false;
+
+            WriteCredential(proc, includePassword: true, token, credentialPath: credentialPath);
+            proc.WaitForExit(5000);
+            return proc.HasExited && proc.ExitCode == 0;
+        }
+
+        private static void RejectCredential(string username, string credentialPath)
         {
             using var proc = StartGit("credential reject");
             if (proc == null) return;
 
-            WriteCredential(proc, includePassword: false, token: null, username: username);
+            WriteCredential(proc, includePassword: false, token: null, username: username, credentialPath: credentialPath);
             proc.WaitForExit(5000);
         }
 
-        private static bool CanFillCredential(string expectedToken)
+        private static bool CanFillCredential(string expectedToken, string credentialPath)
         {
-            string output = FillCredentialOutput();
+            string output = FillCredentialOutput(credentialPath);
             string username = ReadCredentialValue(output, "username");
             string password = ReadCredentialValue(output, "password");
 
             return username == "x-access-token" && password == expectedToken;
         }
 
-        private static string FillCredentialOutput()
+        private static string FillCredentialOutput(string credentialPath)
         {
             using var proc = StartGit("credential fill");
             if (proc == null) return string.Empty;
 
-            WriteCredential(proc, includePassword: false, token: null);
+            WriteCredential(proc, includePassword: false, token: null, credentialPath: credentialPath);
             string output = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit(5000);
             return proc.HasExited && proc.ExitCode == 0 ? output : string.Empty;
@@ -150,11 +161,13 @@ namespace Breadmore.Installer.Editor
             return proc.HasExited ? proc.ExitCode : -1;
         }
 
-        private static void WriteCredential(Process proc, bool includePassword, string token, string username = null)
+        private static void WriteCredential(Process proc, bool includePassword, string token, string username = null, string credentialPath = null)
         {
             proc.StandardInput.NewLine = "\n";
             proc.StandardInput.WriteLine("protocol=https");
             proc.StandardInput.WriteLine("host=github.com");
+            if (!string.IsNullOrEmpty(credentialPath))
+                proc.StandardInput.WriteLine("path=" + credentialPath);
             if (!string.IsNullOrEmpty(username))
                 proc.StandardInput.WriteLine("username=" + username);
             if (includePassword)
