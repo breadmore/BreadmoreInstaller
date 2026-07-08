@@ -27,6 +27,7 @@ namespace Breadmore.Installer.Editor
             try
             {
                 EnsureCredentialHelperConfigured();
+                ForgetCredential();
 
                 using var proc = StartGit("credential approve");
                 if (proc == null)
@@ -63,6 +64,15 @@ namespace Breadmore.Installer.Editor
         {
             int exit = RunGit("config --global --get credential.helper", 5000, out string stdout, out _);
             return exit == 0 && !string.IsNullOrWhiteSpace(stdout);
+        }
+
+        private static void ForgetCredential()
+        {
+            using var proc = StartGit("credential reject");
+            if (proc == null) return;
+
+            WriteCredential(proc, includePassword: false, token: null);
+            proc.WaitForExit(5000);
         }
 
         private static bool CanFillCredential()
