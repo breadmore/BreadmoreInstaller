@@ -1,3 +1,4 @@
+using System.IO;
 using UnityEditor;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
@@ -95,13 +96,22 @@ namespace Breadmore.Installer.Editor
         {
             if (_request == null || !_request.IsCompleted) return;
 
-            if (_request.Status == StatusCode.Success)
+            if (_request.Status == StatusCode.Success || IsCoreInstalledInManifest())
                 _status = "Breadmore Core installed. You can now use the full Breadmore menu.";
             else
-                _status = "Failed to install Breadmore Core: " + GitAuth.Sanitize(_request.Error?.message);
+                _status = "Could not confirm Breadmore Core installation: " + GitAuth.Sanitize(_request.Error?.message);
 
             _request = null;
             Repaint();
+        }
+
+        private static bool IsCoreInstalledInManifest()
+        {
+            string manifestPath = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Packages", "manifest.json"));
+            if (!File.Exists(manifestPath)) return false;
+
+            string manifest = File.ReadAllText(manifestPath);
+            return manifest.Contains("\"com.breadmore.core\"");
         }
 
         private void InstallCore()
